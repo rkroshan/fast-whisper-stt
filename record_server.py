@@ -2,7 +2,8 @@ import sys
 import socket
 from faster_whisper import WhisperModel
 import logging
-
+import numpy as np
+from record_client import CommMethod
 
 class record_server:
 
@@ -13,7 +14,8 @@ class record_server:
         compute_type = 'int8',
         beam_size = 5,
         host = '127.0.0.1',
-        port = 8090
+        port = 8090,
+        communicationMethod = CommMethod.WAVEFILE
     ):
         self.model_size = model_size
         self.device = device
@@ -23,24 +25,37 @@ class record_server:
         self.port = port
         self.model = None
         self.socket = None
+        self.communicationMethod = communicationMethod
         # open server
         self._open_server()
         #init model
         self._init_model()
 
     def run(self):
+        is_connection_closed = False
         self.socket.listen(1)
+        if self.communicationMethod == CommMethod.NPARRAY:
+            conn, addr = self.socket.accept()
         while True:
             try:
-                conn, addr = self.socket.accept()
+                if (self.communicationMethod == CommMethod.WAVEFILE) or is_connection_closed:
+                    conn, addr = self.socket.accept()
                 # first wait for response from client
-                data = conn.recv(1024)
+                # print("waiting for data...")
+                data = conn.recv(4096)                    
                 if not data:
                     print("No Data received")
+                    is_connection_closed = True
                     continue
-                print("Recieved from client",data.decode())
-                text = self._transcribe(data.decode())
+                if self.communicationMethod == CommMethod.NPARRAY:
+                    print("Recieved from client",type(data))
+                    data = np.frombuffer(data, dtype=np.float32)
+                    print(type(data))
+                    text = self._transcribe(data)
+                elif self.communicationMethod == CommMethod.WAVEFILE:
+                    text = self._transcribe(data.decode())
                 # send the transcribed data
+                print("Sent text", text)
                 conn.send(text.encode())
             except Exception as e:
                 print("run error :")

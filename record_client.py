@@ -4,6 +4,13 @@ import sys
 import wave
 import os
 import shutil
+import numpy as np
+import threading
+from enum import Enum
+
+class CommMethod(Enum):
+    WAVEFILE = 1
+    NPARRAY = 2
 
 class record_client:
     def __init__(
@@ -16,7 +23,8 @@ class record_client:
         device_index=-1,
         host='127.0.0.1',
         port=8090,
-        int_wav_file_dir = '/home/rkrosha/faster-whisper/wavfiles/'
+        int_wav_file_dir = '/home/rkrosha/faster-whisper/wavfiles/',
+        communicationMethod = CommMethod.WAVEFILE
     ):
         self.format = format
         self.channels = channels
@@ -32,6 +40,8 @@ class record_client:
         self.socket = None
         self.int_wav_file_dir = int_wav_file_dir
         self.wavefile = None
+        self.communicationMethod = communicationMethod
+        self.recordframes_np = None
         if not os.path.exists(self.int_wav_file_dir):
             os.makedirs(self.int_wav_file_dir)
 
@@ -41,23 +51,28 @@ class record_client:
     def __call__(self):
         # called when record client object run
         # open stream and start recording
+        if self.communicationMethod == CommMethod.NPARRAY:
+            self._connect_to_server()
         self._start_recording()
     
     def _start_recording(self):
         while True:
             try:
                 x = input("press any key to start recording...")
-                # now try to connect to server
-                self._connect_to_server()
+                if self.communicationMethod == CommMethod.WAVEFILE:
+                    # now try to connect to server
+                    self._connect_to_server()
                 print("recording started")
                 self._open_record_stream()
                 self._record()
                 print ("recording stopped")
-                self._convert_to_wavefile_n_st_server()
+                if self.communicationMethod == CommMethod.WAVEFILE:
+                    self._convert_to_wavefile_n_st_server()
                 self._stop_stream()
                 self._close_stream()
-                self._get_STT_server_response()
-                self._close_socket_connection()
+                if self.communicationMethod == CommMethod.WAVEFILE:
+                    self._get_STT_server_response()
+                    self._close_socket_connection()
             except KeyboardInterrupt:
                 print("Interrupted by user")
                 self._close_everything()
@@ -97,7 +112,7 @@ class record_client:
 
     def _send_packets_to_server(self, packet):
         try:
-            print("Sent packets:", packet)
+            # print("Sent packets:", packet)
             self.socket.sendall(packet)
         except socket.error as e:
             print("socket error :")
@@ -112,11 +127,23 @@ class record_client:
         # self._del_wavefiles()
         sys.exit(1)
 
+    def _convert_to_nparray_n_st_server(self, audio_frames):
+        # convert each chunk of frames into nparray
+        audio_array = np.frombuffer(buffer=audio_frames, dtype=np.int16).flatten().astype(np.float32) / 32768.0 
+        self.recordframes = []
+        # _send packet to server
+        print(type(audio_array))
+        self._send_packets_to_server(audio_array.tobytes())
+
     def _record(self):
         try:
             for i in range(0, int(self.rate / self.chunk * self.record_seconds)):
-                data = self.stream.read(self.chunk)
-                self.recordframes.append(data)
+                frames_per_buffer = self.stream.read(self.chunk)
+                self.recordframes.append(frames_per_buffer)
+            if self.communicationMethod == CommMethod.NPARRAY:
+                audio_frames = b''.join(self.recordframes)
+                self._convert_to_nparray_n_st_server(audio_frames)
+                # self._send_packets_to_server(self.recordframes)
         except Exception as e:
             print("_record error :")
             print(e)
@@ -134,10 +161,23 @@ class record_client:
             self._terminate_audio_connection()
             sys.exit(1)
 
+    def _recv_req_from_server(self):
+        try:
+            while True:
+                # print("Waiting for response...")
+                data = self.socket.recv(1024)
+                # print("Response:>>>")
+                print(data.decode())
+        except Exception as e:
+            print("_recv_req_from_server error:")
+            print(e)
+
     def _connect_to_server(self):
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
+            if self.communicationMethod == CommMethod.NPARRAY:
+                thread = threading.Thread(target=self._recv_req_from_server)
         except socket.error as e:
             print("socket error :")
             print(e)
